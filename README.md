@@ -1,7 +1,8 @@
 # News
-Version 0.7 is current latest. It comes with a better gui, a config file, RAG and summarizing for PDF and fixes for RAG with GPU.
+Latest version now with authentication for new /management page: user:mngmt pass:Supertoken.
+Use /management page to upload custom logo and background images for / in .jpeg format.
 
-Version 0.5.1 is current latest. With this version, users can set custom llm parameters via the user interface.
+Since version 0.7, config via a config file, RAG and summarizing for PDF are supported.
 
 # What it does? 
 * With this repo you get a container which offers a local hosted llama based llm with gui access. No GPU required but you can use it with GPU support, if you have a GPU available.
@@ -20,22 +21,45 @@ Version 0.5.1 is current latest. With this version, users can set custom llm par
 * go into the new directory onpremchat
 
 ## CPU only
-* docker-compose up - if you don't have docker-compose see below.
+* docker compose up - if you don't have docker-compose see below.
 * By default, service is available under localhost:8000.
 * A frontend to chat with the llm is available under localhost:8000/chat
 * To learn about the api and try things out, connect to localhost:8000/docs
 
 ## GPU support
-* docker-compose -f docker-compose_gpu.yml up
+* docker compose -f docker-compose_gpu.yml up
 
 # How to configure it?
 
 * Configuration is done via environment variables. Default config loads a german fine tuned llm. 
 
 ## Configuration options general:
-* SUPERTOKEN - The token for admin access to the api
+
+### Model confguration
 * MODEL_DOWNLOAD_URL - The URL to download a model in GGUF format from.
 * MODEL_BIN_PATH - The path of the model as /models/[OPTIONAL_SUBDIRECTORIES]/FILENAME
+* NUMBER_OF_TOKENS - Context Window (Number)
+* TEMPERATURE - temperature
+* MAX_TOKENS - maximum tokens to generate
+* TOP_K - top k
+* TOP_P - top p
+* REPEAT_PENALTY - repeat penalty
+* SUMMARIZER - simple or advanced, advanced is experimental, gpu recomended
+* CHATPROMPT - Systemprompt for Chat
+* PROMPTFORMAT - leo-mistral or llama3 depending on the model
+
+### App configuration
+* SUPERTOKEN - The token for admin access to the api
+* CHATERROR - Errormessage for llm errors in chat
+* ASSISTANT - Name of assistant
+* YOU - How the user is adressed
+* GREETING - Greetingmessage in chat
+* PDFGREETING - Greetingmessage in pdf
+* PDFPROC - Message while pdf is processed
+* APP_TITLE - Title of the app
+* TOCHAT - Text of chat link
+* TOPDF - Text of PDF link
+
 
 ## Additional options for GPU image:
 * GPU_LAYERS - The number of layers to load on GPU

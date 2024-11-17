@@ -4,10 +4,12 @@ import requests
 import json
 print("start")
 cfg = config()
-llm = build_llm(cfg)
+#llm = build_llm(cfg)
 import os
 
 from llama_index.llms import LlamaCPP
+
+n_ctx = int(os.getenv('NUMBER_OF_TOKENS',default=cfg.get_config('model','number_of_tokens',default=4096)))
 llm2 = LlamaCPP(
         # You can pass in the URL to a GGML model to download it automatically
         # optionally, you can set the path to a pre-downloaded model instead of model_url
@@ -15,15 +17,16 @@ llm2 = LlamaCPP(
         temperature=0.1,
         max_new_tokens=512,
         # llama2 has a context window of 4096 tokens, but we set it lower to allow for some wiggle room
-        context_window=3900,
+        context_window=n_ctx,
         # kwargs to pass to __call__()
         generate_kwargs={},
         # kwargs to pass to __init__()
         # set to at least 1 to use GPU
-        model_kwargs={"n_gpu_layers": int(os.getenv('GPU_LAYERS',default=cfg.get_config('model','gpu_layers',default=0)))},
+        model_kwargs={"n_gpu_layers": int(os.getenv('GPU_LAYERS',default=cfg.get_config('model','gpu_layers',default=0))),"n_ctx":n_ctx},
         verbose=True,
         )
-            
+
+llm = llm2          
 
 
 from fastapi import FastAPI
@@ -44,7 +47,7 @@ import pdftools
 from pdfrag import PDF_Processor
 from statistics import Statistic
 
-
+from promptutils import PromptFomater
 
 
 class jobStatus():
@@ -194,6 +197,8 @@ class MainProcessor (threading.Thread):
         self.taskQueue = taskQueue
         self.jobStat = jobStat
         self.statistic = statistic
+
+
         
     def run(self):
         while True:
@@ -201,7 +206,7 @@ class MainProcessor (threading.Thread):
             self.jobStat.updateStatus(job['token'],job['uuid'],"processing")
             item = self.jobStat.getJobStatus(job['token'],job['uuid'])
             self.statistic.updateQueueSize(self.jobStat.countQueuedJobs())
-            
+            print(item['job_type'])
             if 'job_type' in item and item['job_type'] == 'pdf_processing':
                 if 'filepath' in job:
                     filepath = job['filepath']
@@ -209,7 +214,10 @@ class MainProcessor (threading.Thread):
                     if not pdfProc:
                         pdfProc = PDF_Processor(cfg,llm2)
                         self.jobStat.addPDFProc(job['token'],job['uuid'],pdfProc)
-                    pdfProc.processPDF(filepath)
+                    #Old
+                    #pdfProc.processPDF(filepath)
+                    #New:
+                    pdfProc.processDirectory(os.path.dirname(filepath))
                     self.jobStat.updateStatus(job['token'],job['uuid'],"finished")
 
             else:
@@ -221,20 +229,16 @@ class MainProcessor (threading.Thread):
                         self.jobStat.updateStatus(job['token'],job['uuid'],"failed")
                     else:
                         answer = pdfProc.askPDF(item['prompt'][-1])
-                        #print(answer)
-                        #answer.print_response_stream()
                         for answ in answer:
-                            
-                            #print(answ)
-                            #res = answ#answ['choices'][0]['text'] 
                             response += answ
                             if not self.jobStat.updateAnswer(job['token'],job['uuid'],response):
                                 break
-                        print(response)
                         metadatas = pdfProc.getLastResponseMetaData()
                         response = response + "(vgl. "
                         for metadata in metadatas:
                             source = metadata['source'] if 'source' in metadata else '?'
+                            if source == '?':
+                                source = metadata['page_label'] if 'page_label' in metadata else '?'
                             name = metadata['file_path'] if 'file_path' in metadata else '?'
                             if '/' in name:
                                 name = name.split('/')[-1]
@@ -256,48 +260,42 @@ class MainProcessor (threading.Thread):
                         if 'summarizer' in job:
                             summarizer = job['summarizer']
                         else:
-                            summarizer = pdftools.SimplePdfSummarizer(llm,pdf_proc,create_callback,update_callback,status_callback,cfg)
+                            summarizer_type = os.getenv('SUMMARIZER',default=cfg.get_config('model','summarizer',default="simple"))
+                            if summarizer_type == "advanced":
+                                summarizer = pdftools.AdvancedPdfSummarizer(llm,pdf_proc,create_callback,update_callback,status_callback,cfg)
+                            else:
+                                summarizer = pdftools.SimplePdfSummarizer(llm,pdf_proc,create_callback,update_callback,status_callback,cfg)
+                                
                         if not summarizer.run():
-                            print('putting summarizer again')
                             self.taskQueue.put({'token':job['token'],'uuid':job['uuid'],'summarizer':summarizer})
 
                     else:
-
-                        prompts = item['prompt']
-                        answers = []
-                        if 'answer' in item:
-                            answers = item['answer']
-            
-                        i_p = 0
-                        i_a = 0
-                        instruction = ""
-                        while i_p < len(prompts):
-                            instruction += "USER:  " + prompts[i_p]
-                            if i_a < len(answers):
-                                instruction += "ASSISTANT:  " + answers[i_a]
-                            i_p += 1
-                            i_a += 1
-            
-                        if len(instruction) >= 20000:
-                            instruction = instruction[-20000:]
-                        chatprompt = os.getenv('CHATPROMPT',default=cfg.get_config('model','chatprompt',default="Du bist ein hilfreicher Assistent."))
-                        prompt = f"{chatprompt} {instruction} ASSISTANT:"
-            
+                        sysprompt = os.getenv('CHATPROMPT',default=cfg.get_config('model','chatprompt',default="Du bist ein hilfreicher Assistent."))
+                        prompt_format = os.getenv('PROMPTFORMAT',default=cfg.get_config('model','promptformat',default="leo-mistral"))
+                        print("inChat")
+                        formatter = PromptFomater()
+                        print(item)
+                        prompt = formatter.format(item,sysprompt,prompt_format)
                         response = ""
+                        print("Formattet")
                         self.jobStat.addAnswer(job['token'],job['uuid'],response)
                         try:
                             if item['custom_config']:
-                                answer = llm(prompt, stream=True, temperature = item['custom_config']['temperature'], max_tokens = item['custom_config']['max_tokens'], top_k=item['custom_config']['top_k'], top_p=item['custom_config']['top_p'],repeat_penalty=item['custom_config']['repeat_penalty'])
+                                #answer = llm(prompt, stream=True, temperature = item['custom_config']['temperature'], max_tokens = item['custom_config']['max_tokens'], top_k=item['custom_config']['top_k'], top_p=item['custom_config']['top_p'],repeat_penalty=item['custom_config']['repeat_penalty'])
+                                answer = llm.stream(prompt)
                             else:
-                                answer = llm(prompt, stream=True, temperature = 0.7, max_tokens = 1024, top_k=20, top_p=0.9,repeat_penalty=1.15)
-                
+                                #answer = llm(prompt, stream=True, temperature = 0.7, max_tokens = 1024, top_k=20, top_p=0.9,repeat_penalty=1.15)
+                                answer = llm.stream(prompt)
                             for answ in answer:
-                                res = answ['choices'][0]['text'] 
+                                #res = answ['choices'][0]['text']
+                                res = answ 
+
                                 response += res
                                 if not self.jobStat.updateAnswer(job['token'],job['uuid'],response):
                                     break
-                        except:
-                            response = "An Error occured."
+                        except Exception as e:
+                            print(e)
+                            response = os.getenv('CHATERROR',default=cfg.get_config('model','chaterror',default="Sie haben die maximale Chatlänge erreicht."))
                         self.jobStat.updateAnswer(job['token'],job['uuid'],response)            
                         self.jobStat.updateStatus(job['token'],job['uuid'],"finished")
 

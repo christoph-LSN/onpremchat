@@ -3,6 +3,7 @@ from llama_index.llms import LlamaCPP
 from llama_index import ServiceContext
 from llama_index.vector_stores import SimpleVectorStore
 from llama_hub.file.pymu_pdf.base import PyMuPDFReader
+from llama_index import SimpleDirectoryReader
 from llama_index.node_parser.text import SentenceSplitter
 from llama_index.schema import TextNode
 from llama_index.vector_stores import VectorStoreQuery
@@ -97,23 +98,7 @@ class PDF_Processor():
         
         self.llm = llm
 
-        
-        '''LlamaCPP(
-        # You can pass in the URL to a GGML model to download it automatically
-        # optionally, you can set the path to a pre-downloaded model instead of model_url
-        model_path=os.getenv('MODEL_BIN_PATH',default=cfg.get_config('model','model_bin_path',default="/models/em_german_leo_mistral.Q5_K_S.gguf")),
-        temperature=0.1,
-        max_new_tokens=512,
-        # llama2 has a context window of 4096 tokens, but we set it lower to allow for some wiggle room
-        context_window=3900,
-        # kwargs to pass to __call__()
-        generate_kwargs={},
-        # kwargs to pass to __init__()
-        # set to at least 1 to use GPU
-        model_kwargs={"n_gpu_layers": int(os.getenv('GPU_LAYERS',default=cfg.get_config('model','gpu_layers',default=0)))},
-        verbose=True,
-        )
-        '''
+    
 
         self.service_context = ServiceContext.from_defaults(
         llm=self.llm, embed_model=self.embed_model
@@ -166,10 +151,14 @@ class PDF_Processor():
         return True
             
 
-    def processPDF(self,filepath):
-        loader = PyMuPDFReader()
-        documents = loader.load(file_path=filepath)
-        self.filepathes.append(filepath)
+    def processDirectory(self, path):
+        loader = SimpleDirectoryReader(input_dir=path)
+        documents = loader.load_data()
+        self.filepathes.append(path)
+        self.processDocs(documents)
+        self.remove(path)
+
+    def processDocs(self,documents):
         text_chunks = []
         # maintain relationship with source doc index, to help inject doc metadata in (3)
         doc_idxs = []
@@ -194,12 +183,19 @@ class PDF_Processor():
             node.embedding = node_embedding
         
         self.vector_store.add(nodes)
+        
         self.nodes.extend(nodes)
+
+    def processPDF(self,filepath):
+        loader = PyMuPDFReader()
+        documents = loader.load(file_path=filepath)
+        self.filepathes.append(filepath)
+        self.processDocs(documents)
         self.remove(filepath)
 
     def askPDF(self,question):
         retriever = OwnRetriever(
-            self.vector_store, self.embed_model, self.nodes, query_mode="default", similarity_top_k=1
+            self.vector_store, self.embed_model, self.nodes, query_mode="default", similarity_top_k=3
         )
         query_engine = RetrieverQueryEngine.from_args(
             retriever, service_context=self.service_context, streaming = True
@@ -213,7 +209,6 @@ class PDF_Processor():
             self.vector_store, self.embed_model, self.nodes, query_mode="default", similarity_top_k=top_k
         )
         nodes_with_scores = retriever.retrieve(question)
-        print(nodes_with_scores)
         return nodes_with_scores
 
     def getLastResponseMetaData(self):
@@ -227,11 +222,17 @@ class PDF_Processor():
     def getNodesContents(self):
         for node in self.nodes:
             content = node.get_content()
-            print(node.metadata)
+            
             name = str(node.metadata['file_path']) if 'file_path' in node.metadata else 'unknown'
             if '/' in name:
                 name = name.split('/')[-1]
-            source = str(node.metadata['source']) if 'source' in node.metadata else 'unknown'
+            if 'source' in node.metadata:
+                source = str(node.metadata['source'])
+            else:
+                if 'page_label' in node.metadata:
+                    source = str(node.metadata['page_label']) 
+                else: 
+                    source = '?'
             yield content, name, source
 
 
